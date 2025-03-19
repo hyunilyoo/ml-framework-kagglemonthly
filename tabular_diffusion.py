@@ -75,6 +75,14 @@ class TabularEncoder:
         self.original_dtypes = data.dtypes.to_dict()
         print(f"DEBUG - Original dtypes: {self.original_dtypes}")
         
+        # Store the original bounds for numerical columns
+        self.original_bounds = {}
+        for col in self.numerical_columns:
+            min_val = data[col].min()
+            max_val = data[col].max()
+            self.original_bounds[col] = (min_val, max_val)
+            print(f"DEBUG - Recorded bounds for {col}: min={min_val}, max={max_val}")
+        
         # Handle numerical features
         if self.numerical_columns:
             self.num_encoders.fit(data[self.numerical_columns])
@@ -185,6 +193,11 @@ class TabularEncoder:
                     # Replace NaN/Inf with means
                     num_data_inv = np.nan_to_num(num_data_inv, nan=0.0, posinf=100.0, neginf=-100.0)
                     
+                # Track the original bounds for each column if available
+                column_bounds = {}
+                if hasattr(self, 'original_bounds'):
+                    column_bounds = self.original_bounds
+
                 for i, col in enumerate(self.numerical_columns):
                     # Add a small random variation to prevent all identical values
                     column_data = num_data_inv[:, i]
@@ -192,6 +205,16 @@ class TabularEncoder:
                         print(f"DEBUG - WARNING: All identical values for column {col}")
                         # Add small random noise to differentiate values
                         column_data = column_data + np.random.randn(len(column_data)) * 0.01 * np.abs(column_data[0] if column_data[0] != 0 else 1.0)
+                    
+                    # Apply bounds constraints if we know the original bounds
+                    if col in column_bounds:
+                        orig_min, orig_max = column_bounds[col]
+                        print(f"DEBUG - Enforcing bounds for {col}: min={orig_min}, max={orig_max}")
+                        column_data = np.clip(column_data, orig_min, orig_max)
+                        
+                        # Enforce non-negativity if original data was non-negative
+                        if orig_min >= 0:
+                            column_data = np.clip(column_data, 0, None)
                     
                     result_dict[col] = column_data
             except Exception as e:
@@ -345,15 +368,28 @@ class TabDDPM_MLP(nn.Module):
         
         # Calculate input size for network
         input_size = len(num_idxs) + len(cat_idxs) * embedding_dim
+        if input_size == 0:
+            # Safety check to avoid zero input size
+            input_size = 1
+            print("WARNING: Input size was 0, setting to 1 to avoid errors")
         
         # Initial layer
         self.net.append(nn.Linear(input_size, hidden_dims[0]))
         
+        # Initialize weights with Xavier/Glorot initialization for better stability
+        nn.init.xavier_normal_(self.net[0].weight)
+        nn.init.zeros_(self.net[0].bias)
+        
         # Hidden layers with FiLM conditioning
         for i in range(len(hidden_dims) - 1):
+            linear_layer = nn.Linear(hidden_dims[i], hidden_dims[i+1])
+            # Apply Xavier initialization
+            nn.init.xavier_normal_(linear_layer.weight)
+            nn.init.zeros_(linear_layer.bias)
+            
             self.net.append(nn.ModuleList([
                 nn.SiLU(),
-                nn.Linear(hidden_dims[i], hidden_dims[i+1]),
+                linear_layer,
                 FiLM(hidden_dims[i+1], self.time_embed_dim)
             ]))
         
@@ -366,13 +402,37 @@ class TabDDPM_MLP(nn.Module):
         
         # Track original shape for proper reshaping later
         original_shape = x.shape
+        original_batch_size = x.shape[0]
         
         # Check and fix input dimensions
         if len(x.shape) > 2:
             # If we have batch x batch_size x features, flatten the extra dimension
             print(f"DEBUG - Reshaping tensor from {x.shape} to 2D")
-            x = x.reshape(-1, x.shape[-1])
+            
+            # If the tensor is [batch, batch, features], we need to reshape carefully
+            if x.shape[0] == x.shape[1]:
+                print(f"WARNING - Tensor has same batch dim in first two dimensions")
+                # Use only the first slice to avoid self-broadcasting issue
+                x = x[:, 0, :].reshape(original_batch_size, -1)
+            else:
+                # Standard reshape
+                x = x.reshape(original_batch_size, -1)
+                
             print(f"DEBUG - Reshaped to {x.shape}")
+        
+        # Verify the reshaped tensor size
+        if x.shape[1] != self.input_dim:
+            print(f"WARNING - Input feature dimension {x.shape[1]} doesn't match expected {self.input_dim}")
+            # We need to fix this - truncate or pad
+            if x.shape[1] > self.input_dim:
+                # Truncate extra features
+                x = x[:, :self.input_dim]
+                print(f"DEBUG - Truncated to {x.shape}")
+            else:
+                # Pad with zeros
+                padding = torch.zeros((x.shape[0], self.input_dim - x.shape[1]), device=x.device)
+                x = torch.cat([x, padding], dim=1)
+                print(f"DEBUG - Padded to {x.shape}")
         
         batch_size, total_dim = x.shape
         
@@ -412,7 +472,8 @@ class TabDDPM_MLP(nn.Module):
                     # Get embeddings
                     cat_feature = emb(safe_cats)
                     x_cat.append(cat_feature.squeeze(1))
-                    print(f"DEBUG - Cat feature {i} (idx {idx}) shape: {cat_feature.squeeze(1).shape}")
+                    if batch_size < 10:  # Limit logging
+                        print(f"DEBUG - Cat feature {i} (idx {idx}) shape: {cat_feature.squeeze(1).shape}")
                 else:
                     # If index is out of bounds, create a zero embedding
                     dummy_embedding = torch.zeros((batch_size, self.embedding_dim), device=x.device)
@@ -431,7 +492,8 @@ class TabDDPM_MLP(nn.Module):
                          if cat.size(0) < max_size else cat for cat in x_cat]
             
             x_cat = torch.cat(x_cat, dim=1)
-            print(f"DEBUG - Combined categorical features shape: {x_cat.shape}")
+            if batch_size < 10:  # Limit logging
+                print(f"DEBUG - Combined categorical features shape: {x_cat.shape}")
             
             # Check if numerical and categorical have matching batch size
             if x_num.size(0) != x_cat.size(0):
@@ -445,12 +507,14 @@ class TabDDPM_MLP(nn.Module):
             # Now concatenate them
             if x_num.size(1) > 0:  # Only if we have numerical features
                 h = torch.cat([x_num, x_cat], dim=1)
-                print(f"DEBUG - Combined features shape: {h.shape}")
+                if batch_size < 10:  # Limit logging
+                    print(f"DEBUG - Combined features shape: {h.shape}")
             else:
                 h = x_cat
         else:
             h = x_num
-            print(f"DEBUG - Using only numerical features with shape: {h.shape}")
+            if batch_size < 10:  # Limit logging
+                print(f"DEBUG - Using only numerical features with shape: {h.shape}")
         
         # Initial layer
         h = self.net[0](h)
@@ -461,21 +525,54 @@ class TabDDPM_MLP(nn.Module):
             h = layer_modules[0](h)  # Activation
             h = layer_modules[1](h)  # Linear
             h = layer_modules[2](h, t_emb)  # FiLM conditioning
+            
+            # Check for NaN values
+            if torch.isnan(h).any():
+                print(f"WARNING - NaN values detected after layer {i}")
+                # Replace NaNs with zeros
+                h = torch.nan_to_num(h, nan=0.0)
         
         # Output layer
         output = self.final_layer(h)
         
-        # Ensure output has the correct shape
-        # If the input was originally more than 2D (e.g., batch x batch_size x features)
-        # we need to reshape the output accordingly
-        if len(original_shape) > 2 and original_shape[0] * original_shape[1] == output.shape[0]:
+        # Ensure output has the same batch size as input
+        if output.shape[0] != original_batch_size:
+            print(f"WARNING - Output batch size {output.shape[0]} doesn't match input batch size {original_batch_size}")
+            # Try to fix by reshaping
             try:
-                # Reshape back to match the input dimensionality
-                output = output.view(original_shape[0], original_shape[1], -1)
-                print(f"DEBUG - Reshaped output to {output.shape}")
-            except Exception as e:
-                print(f"WARNING - Could not reshape output: {str(e)}")
+                output = output.reshape(original_batch_size, -1)
+            except:
+                # If reshaping fails, pad or truncate to match
+                if output.shape[0] < original_batch_size:
+                    # Pad
+                    padding = torch.zeros((original_batch_size - output.shape[0], output.shape[1]), device=output.device)
+                    output = torch.cat([output, padding], dim=0)
+                else:
+                    # Truncate
+                    output = output[:original_batch_size]
         
+        # Ensure output has the expected feature dimension
+        expected_features = self.input_dim
+        if output.shape[1] != expected_features:
+            print(f"WARNING - Output feature dim {output.shape[1]} doesn't match expected {expected_features}")
+            # Try to fix by reshaping
+            try:
+                output = output.reshape(original_batch_size, expected_features)
+            except:
+                # If reshaping fails, pad or truncate to match
+                if output.shape[1] < expected_features:
+                    # Pad
+                    padding = torch.zeros((output.shape[0], expected_features - output.shape[1]), device=output.device)
+                    output = torch.cat([output, padding], dim=1)
+                else:
+                    # Truncate
+                    output = output[:, :expected_features]
+        
+        # Final check for NaNs
+        if torch.isnan(output).any():
+            print(f"WARNING - NaN values detected in model output")
+            output = torch.nan_to_num(output, nan=0.0)
+            
         return output
 
 
@@ -505,11 +602,59 @@ class FiLM(nn.Module):
         super().__init__()
         self.scale = nn.Linear(condition_dim, feature_dim)
         self.shift = nn.Linear(condition_dim, feature_dim)
+        # Initialize to near identity function to improve stability
+        with torch.no_grad():
+            self.scale.weight.data.fill_(0.01)
+            self.scale.bias.data.fill_(0.0)
+            self.shift.weight.data.fill_(0.01)
+            self.shift.bias.data.fill_(0.0)
         
     def forward(self, x, condition):
-        scale = self.scale(condition).unsqueeze(1)
-        shift = self.shift(condition).unsqueeze(1)
-        return x * (scale + 1) + shift
+        # Get batch size from input tensor
+        batch_size = x.shape[0]
+        
+        # Generate scale and shift parameters based on conditioning
+        scale = self.scale(condition)
+        shift = self.shift(condition)
+        
+        # Prevent extreme values that might cause numerical instability
+        scale = torch.clamp(scale, -10.0, 10.0)
+        shift = torch.clamp(shift, -10.0, 10.0)
+        
+        # Check for NaN values in inputs
+        if torch.isnan(x).any():
+            print("WARNING: NaN values detected in FiLM input tensor")
+            x = torch.nan_to_num(x, nan=0.0)
+        if torch.isnan(scale).any() or torch.isnan(shift).any():
+            print("WARNING: NaN values detected in FiLM scale/shift")
+            scale = torch.nan_to_num(scale, nan=0.0)
+            shift = torch.nan_to_num(shift, nan=0.0)
+        
+        # Ensure proper broadcasting based on input tensor dimensions
+        if len(x.shape) == 2:
+            # For 2D tensors (batch_size, features)
+            scale = scale.view(batch_size, -1)
+            shift = shift.view(batch_size, -1)
+        elif len(x.shape) == 3:
+            # For 3D tensors (batch_size, seq_len, features)
+            # This handles the case where batching causes unexpected dimensions
+            print(f"WARNING: Input to FiLM has 3D shape: {x.shape}")
+            
+            # Reshape both x and the conditioning parameters to 2D
+            x = x.reshape(batch_size, -1)
+            scale = scale.view(batch_size, -1)
+            shift = shift.view(batch_size, -1)
+        
+        # Apply conditioning with careful numerical handling
+        # Use scale+1 to make it an adjustment around identity function
+        result = x * (scale + 1.0) + shift
+        
+        # Final safety check
+        if torch.isnan(result).any():
+            print("WARNING: NaN values detected in FiLM output")
+            result = torch.nan_to_num(result, nan=0.0)
+            
+        return result
 
 class TabularDiffusionModel:
     """
@@ -523,7 +668,8 @@ class TabularDiffusionModel:
                  num_timesteps: int = 1000,
                  beta_schedule: str = 'cosine',
                  guidance_scale: float = 3.0,
-                 device: str = 'cuda' if torch.cuda.is_available() else 'cpu'):
+                 device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
+                 ):
         """
         Initialize the diffusion model following TabDDPM architecture.
         
@@ -648,6 +794,11 @@ class TabularDiffusionModel:
         print(f"DEBUG - Categorical indices: {cat_idxs}")
         print(f"DEBUG - Categorical dimensions: {cat_dims}")
         
+        # Check input_dim is valid
+        if input_dim <= 0:
+            print("WARNING: Invalid input dimension detected. Using fallback dimension.")
+            input_dim = max(len(self.categorical_columns) + len(self.numerical_columns), 1)
+        
         # Initialize the model if not already
         if self.model is None:
             self.model = TabDDPM_MLP(
@@ -660,14 +811,32 @@ class TabularDiffusionModel:
         
         # Transform the data
         encoded_data = self.encoder.transform(train_data)
+        
+        # Check for NaN values in encoded data
+        if torch.isnan(encoded_data).any():
+            print("WARNING: NaN values found in encoded data. Replacing with zeros.")
+            encoded_data = torch.nan_to_num(encoded_data, nan=0.0)
+            
         dataset = TensorDataset(encoded_data)
         dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
         
-        # Set up optimizer
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
+        # Set up optimizer with a lower learning rate for stability
+        optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, weight_decay=1e-6)
+        
+        # Add learning rate scheduler to improve stability
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode='min', factor=0.5, patience=10, verbose=True,
+            min_lr=1e-6
+        )
+        
+        # Print model summary
+        total_params = sum(p.numel() for p in self.model.parameters())
+        print(f"Model has {total_params:,} total parameters")
         
         # Training loop
         self.model.train()
+        best_loss = float('inf')
+        
         for epoch in range(epochs):
             total_loss = 0.0
             num_batches = 0
@@ -676,6 +845,16 @@ class TabularDiffusionModel:
                 x0 = batch[0].to(self.device)
                 batch_size = x0.shape[0]
                 
+                # Check input shape
+                if x0.shape[1] != input_dim:
+                    print(f"WARNING - Input shape mismatch: {x0.shape} vs expected (batch_size, {input_dim})")
+                    # Try to fix
+                    if x0.shape[1] > input_dim:
+                        x0 = x0[:, :input_dim]  # Truncate
+                    else:
+                        padding = torch.zeros(batch_size, input_dim - x0.shape[1], device=self.device)
+                        x0 = torch.cat([x0, padding], dim=1)  # Pad
+                
                 # Sample a random timestep for each sample
                 t = torch.randint(0, self.num_timesteps, (batch_size,), device=self.device)
                 
@@ -683,8 +862,18 @@ class TabularDiffusionModel:
                 noise = torch.randn_like(x0)
                 xt = self.q_sample(x0, t, noise)
                 
-                # Predict the noise
-                predicted_noise = self.model(xt, t / self.num_timesteps)
+                # Check for NaN values in noisy data
+                if torch.isnan(xt).any():
+                    print("WARNING: NaN values in noisy data. Applying correction.")
+                    xt = torch.nan_to_num(xt, nan=0.0)
+                
+                # Predict the noise - wrap in try-except to handle potential errors
+                try:
+                    predicted_noise = self.model(xt, t / self.num_timesteps)
+                except RuntimeError as e:
+                    print(f"ERROR during forward pass: {str(e)}")
+                    # Skip this batch if we hit a critical error
+                    continue
                 
                 # Add debug checks for tensor shapes
                 if predicted_noise.shape != noise.shape:
@@ -722,19 +911,56 @@ class TabularDiffusionModel:
                 # Calculate loss
                 loss = F.mse_loss(predicted_noise, noise)
                 
+                # Check for NaN/Inf in loss
+                if torch.isnan(loss) or torch.isinf(loss):
+                    print(f"WARNING: NaN or Inf detected in loss. Using fallback loss.")
+                    # Use a fallback loss to avoid breaking the training
+                    loss = torch.tensor(1.0, device=self.device, requires_grad=True)
+                
                 # Update model
                 optimizer.zero_grad()
                 loss.backward()
+                
+                # Gradient clipping to prevent exploding gradients
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                
                 optimizer.step()
                 
                 total_loss += loss.item()
                 num_batches += 1
             
-            avg_loss = total_loss / num_batches
+            # Calculate average loss and update scheduler
+            avg_loss = total_loss / max(num_batches, 1)  # Avoid division by zero
+            scheduler.step(avg_loss)
+            
+            # Save best model
+            if avg_loss < best_loss:
+                best_loss = avg_loss
+                if save_path:
+                    # Create temporary path for best model
+                    best_model_path = save_path + ".best"
+                    torch.save({
+                        'model_state_dict': self.model.state_dict(),
+                        'encoder_state': self.encoder.__dict__,
+                        'model_params': {
+                            'categorical_columns': self.categorical_columns,
+                            'numerical_columns': self.numerical_columns,
+                            'hidden_dims': self.hidden_dims,
+                            'num_timesteps': self.num_timesteps
+                        }
+                    }, best_model_path)
+            
+            # Log progress
             if (epoch + 1) % 10 == 0 or epoch == 0:
-                print(f"Epoch {epoch+1}/{epochs}, Loss: {avg_loss:.6f}")
+                print(f"Epoch {epoch+1}/{epochs}, Loss: {avg_loss:.6f}, Best Loss: {best_loss:.6f}, LR: {optimizer.param_groups[0]['lr']:.6f}")
         
-        # Save the model if path is provided
+        # Load best model if available
+        if save_path and os.path.exists(save_path + ".best"):
+            print("Loading best model for final save")
+            best_checkpoint = torch.load(save_path + ".best", map_location=self.device)
+            self.model.load_state_dict(best_checkpoint['model_state_dict'])
+        
+        # Save the final model if path is provided
         if save_path:
             torch.save({
                 'model_state_dict': self.model.state_dict(),
@@ -746,6 +972,14 @@ class TabularDiffusionModel:
                     'num_timesteps': self.num_timesteps
                 }
             }, save_path)
+            
+            # Clean up temporary best model file
+            best_model_path = save_path + ".best"
+            if os.path.exists(best_model_path):
+                try:
+                    os.remove(best_model_path)
+                except:
+                    pass
     
     def q_sample(self, x0: torch.Tensor, t: torch.Tensor, noise: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
@@ -780,6 +1014,14 @@ class TabularDiffusionModel:
         """
         self.model.eval()
         
+        # Ensure xt has the correct shape (batch_size, features)
+        if len(xt.shape) != 2:
+            print(f"WARNING - Reshaping input tensor from {xt.shape} to 2D")
+            batch_size = xt.shape[0]
+            # If we have a 3D tensor, reshape to 2D
+            xt = xt.reshape(batch_size, -1)
+            print(f"Reshaped to {xt.shape}")
+        
         # Batch size
         batch_size = xt.shape[0]
         
@@ -797,12 +1039,27 @@ class TabularDiffusionModel:
                     t_null = torch.zeros_like(t_tensor, device=self.device)
                     noise_uncond = self.model(xt, t_null / self.num_timesteps)
                     
+                    # Ensure noise_uncond has correct shape
+                    if len(noise_uncond.shape) != 2 or noise_uncond.shape[0] != batch_size:
+                        print(f"WARNING - Fixing unconditional noise shape from {noise_uncond.shape}")
+                        noise_uncond = noise_uncond.reshape(batch_size, -1)
+                    
                     # Conditional prediction
                     noise_cond = self.model(xt, t_tensor / self.num_timesteps)
+                    
+                    # Ensure noise_cond has correct shape
+                    if len(noise_cond.shape) != 2 or noise_cond.shape[0] != batch_size:
+                        print(f"WARNING - Fixing conditional noise shape from {noise_cond.shape}")
+                        noise_cond = noise_cond.reshape(batch_size, -1)
                     
                     # Apply guidance by combining unconditional and conditional predictions
                     # Formula: predicted_noise = unconditional + guidance_scale * (conditional - unconditional)
                     predicted_noise = noise_uncond + self.guidance_scale * (noise_cond - noise_uncond)
+                    
+                    # Final shape check on the predicted noise
+                    if predicted_noise.shape != xt.shape:
+                        print(f"WARNING - Final noise shape mismatch: {predicted_noise.shape} vs {xt.shape}")
+                        predicted_noise = predicted_noise.reshape(xt.shape)
                 except RuntimeError as e:
                     print(f"DEBUG - Error during model inference: {str(e)}")
                     # Fallback: use random noise if model fails
@@ -825,6 +1082,11 @@ class TabularDiffusionModel:
             coef2_reshaped = coef2.view(-1, *([1] * (len(predicted_noise.shape) - 1)))
             
             mean = coef1_reshaped * xt + coef2_reshaped * predicted_noise
+            
+            # Ensure mean has correct shape
+            if mean.shape != xt.shape:
+                print(f"WARNING - Mean shape mismatch: {mean.shape} vs {xt.shape}")
+                mean = mean.reshape(xt.shape)
         except RuntimeError as e:
             print(f"DEBUG - Error calculating mean: {str(e)}")
             print(f"DEBUG - coef1 shape: {coef1.shape}, coef2 shape: {coef2.shape}")
@@ -842,7 +1104,15 @@ class TabularDiffusionModel:
         
         # Safely add noise
         try:
-            result = mean + torch.sqrt(var).view(-1, 1) * noise
+            # Reshape variance for proper broadcasting
+            var_reshaped = torch.sqrt(var).view(-1, *([1] * (len(xt.shape) - 1)))
+            result = mean + var_reshaped * noise
+            
+            # Final shape check
+            if result.shape != xt.shape:
+                print(f"WARNING - Final result shape mismatch: {result.shape} vs {xt.shape}")
+                result = result.reshape(xt.shape)
+                
             return result
         except RuntimeError as e:
             print(f"DEBUG - Error adding noise: {str(e)}")
@@ -901,39 +1171,35 @@ class TabularDiffusionModel:
         # Gradually denoise using classifier-free guidance
         for t in reversed(range(self.num_timesteps)):
             try:
-                # Ensure x has correct shape before passing to p_sample_with_guidance
-                if len(x.shape) != 2:
-                    print(f"DEBUG - Reshaping tensor from {x.shape} to 2D before step {t}")
-                    x = x.reshape(n_samples, -1)
+                # Sanity check on tensor shape before each step
+                if x.shape != shape:
+                    print(f"WARNING - Incorrect tensor shape before step {t}: {x.shape}, reshaping to {shape}")
+                    x = x.reshape(shape)
                 
-                # Call p_sample_with_guidance with the properly shaped tensor
+                # Call p_sample_with_guidance with proper shape
                 x = self.p_sample_with_guidance(x, t)
                 
                 # Verify the output shape after each step
-                if x.shape[0] != n_samples or len(x.shape) != 2:
-                    print(f"WARNING - Incorrect shape after step {t}: {x.shape}, expected ({n_samples}, {self.encoder.output_dim})")
-                    # Try to fix the shape
-                    x = x.reshape(n_samples, -1)
-                    
-                    # If dimensions don't match, we need to pad or truncate
-                    if x.shape[1] != self.encoder.output_dim:
-                        print(f"WARNING - Dimension mismatch: {x.shape[1]} vs expected {self.encoder.output_dim}")
-                        if x.shape[1] > self.encoder.output_dim:
-                            # Truncate
-                            x = x[:, :self.encoder.output_dim]
-                        else:
-                            # Pad with zeros
-                            padding = torch.zeros(n_samples, self.encoder.output_dim - x.shape[1], device=self.device)
-                            x = torch.cat([x, padding], dim=1)
+                if x.shape != shape:
+                    print(f"WARNING - Incorrect shape after step {t}: {x.shape}, expected {shape}")
+                    # Fix the shape
+                    x = x.reshape(shape)
             except Exception as e:
                 print(f"ERROR in denoising step {t}: {str(e)}")
                 # In case of error, try to continue with best effort
                 if t > 0:  # Don't give up on the last step
+                    # Fix tensor shape if we can
+                    if hasattr(x, 'shape'):
+                        x = x.reshape(shape) if x.numel() == shape[0] * shape[1] else torch.randn(shape, device=self.device)
+                    else:
+                        # If x is completely broken, reinitialize
+                        x = torch.randn(shape, device=self.device)
                     continue
             
             # Debug at checkpoints
             if t in checkpoints:
                 print(f"DEBUG - Step {t}: mean={torch.mean(x).item():.6f}, std={torch.std(x).item():.6f}, min={torch.min(x).item():.6f}, max={torch.max(x).item():.6f}")
+                print(f"DEBUG - Tensor shape: {x.shape}")
         
         # Final stats
         print(f"DEBUG - Final denoised tensor: mean={torch.mean(x).item():.6f}, std={torch.std(x).item():.6f}, min={torch.min(x).item():.6f}, max={torch.max(x).item():.6f}")
@@ -1178,6 +1444,14 @@ def generate_synthetic_data_simple_diffusion(
             else:
                 numerical_columns.append(col)
     
+    # Store original bounds for numerical columns
+    numerical_bounds = {}
+    for col in numerical_columns:
+        min_val = train_data[col].min()
+        max_val = train_data[col].max()
+        numerical_bounds[col] = (min_val, max_val)
+        print(f"Original bounds for {col}: min={min_val}, max={max_val}")
+    
     # Create and train the model
     model = TabularDiffusionModel(
         categorical_columns=categorical_columns,
@@ -1213,6 +1487,17 @@ def generate_synthetic_data_simple_diffusion(
             # For numerical columns, use mean or 0
             else:
                 synthetic_data[col] = train_data[col].mean() if len(train_data) > 0 else 0
+    
+    # Apply bounds correction for numerical columns to preserve original data constraints
+    for col in numerical_columns:
+        if col in synthetic_data.columns:
+            orig_min, orig_max = numerical_bounds[col]
+            synthetic_data[col] = synthetic_data[col].clip(lower=orig_min, upper=orig_max)
+            
+            # If original data was non-negative, ensure synthetic data is non-negative
+            if orig_min >= 0:
+                print(f"Enforcing non-negativity for column {col}")
+                synthetic_data[col] = synthetic_data[col].clip(lower=0)
 
     # Check if we got NaN values and use a fallback if needed
     if synthetic_data.isna().values.any() or ((synthetic_data == 0).all().any() and len(numerical_columns) > 0):
@@ -1356,6 +1641,14 @@ def balance_data_with_diffusion(
             if col != target_column and not (data[col].dtype == 'object' or pd.api.types.is_categorical_dtype(data[col])):
                 numerical_columns.append(col)
     
+    # Store original bounds for numerical columns
+    numerical_bounds = {}
+    for col in numerical_columns:
+        min_val = data[col].min()
+        max_val = data[col].max()
+        numerical_bounds[col] = (min_val, max_val)
+        print(f"Original bounds for {col}: min={min_val}, max={max_val}")
+    
     # Initialize the result dataframe
     balanced_data = pd.DataFrame(columns=data.columns)
     
@@ -1400,6 +1693,16 @@ def balance_data_with_diffusion(
                 batch_size=32,
                 seed=seed
             )
+            
+            # Enforce bounds on numerical columns to respect original data constraints
+            for col in numerical_columns:
+                if col in synthetic_samples.columns:
+                    orig_min, orig_max = numerical_bounds[col]
+                    synthetic_samples[col] = synthetic_samples[col].clip(lower=orig_min, upper=orig_max)
+                    
+                    # If original data was non-negative, ensure synthetic data is too
+                    if orig_min >= 0:
+                        synthetic_samples[col] = synthetic_samples[col].clip(lower=0)
             
             # Check if we got NaN values and use a fallback if needed
             if synthetic_samples.isna().values.any() or ((synthetic_samples == 0).all().any() and len(numerical_columns) > 0):

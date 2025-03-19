@@ -3,6 +3,7 @@ import polars as pl
 import pandas as pd
 import joblib
 import numpy as np
+from . import dispatcher
 
 TEST_DATA = os.environ.get('TEST_DATA')
 SUBMIT = os.environ.get('SUBMIT')
@@ -40,7 +41,7 @@ def clf_predict(test_data_path: str, model_type: str, model_name: str, model_pat
         clf = joblib.load(model_file_path)
         
         # Get predictions for current fold
-        fold_preds = clf.predict_proba(df)[:, 1]
+        fold_preds = dispatcher.get_probability_predictions(clf, df)
         
         # Add to ensemble
         if predictions is None:

@@ -26,10 +26,32 @@ def plot_distributions(orig_df, syn_df, columns, n_cols=3):
     plt.tight_layout()
     plt.show()
 
+def enforce_original_bounds(orig_df, syn_df, columns):
+    """Ensure synthetic data respects the bounds of the original data"""
+    for col in columns:
+        # Get original min and max values
+        orig_min = orig_df[col].min()
+        orig_max = orig_df[col].max()
+        
+        # Apply bounds to synthetic data
+        syn_df[col] = syn_df[col].clip(lower=orig_min, upper=orig_max)
+        
+        # Check if original data is always positive
+        if orig_min >= 0:
+            # Ensure synthetic data is also non-negative
+            syn_df[col] = syn_df[col].clip(lower=0)
+            
+    return syn_df
+
 def main():
     # Load your data
     df = pd.read_csv('input/month3/train.csv')
     df = df.drop(['id', 'day'], axis=1)
+    
+    # Before calling generate_synthetic_data_tabddpm
+    df = df.dropna()  # Remove rows with NaN values
+    # Or impute missing values
+    df = df.fillna(df.mean())
     
     # Define your target variable
     target = 'rainfall'
@@ -49,11 +71,12 @@ def main():
         categorical_columns=[target],  # Pass target as a list with one element
         numerical_columns=num_list,    # All other columns as numerical
         num_samples=1000,
-        epochs=500,                    # Reduced for faster testing but still meaningful
-        batch_size=128, 
+        epochs=2000,                    # More epochs but smaller steps
+        batch_size=64,  # Smaller batch size
         hidden_dims=[512, 512, 512],   # Deeper model as per TabDDPM paper
-        guidance_scale=3.0,            # Classifier-free guidance scale
-        device='cuda' if torch.cuda.is_available() else 'cpu'
+        guidance_scale=1.0,            # Lower from 3.0 to reduce extreme values
+        device='cuda'
+        # device='cuda' if torch.cuda.is_available() else 'cpu'
     )
     
     # Verify the target column is in the synthetic data
@@ -91,6 +114,10 @@ def main():
         # Ensure target values are properly formatted as integers (0/1 for binary target)
         syn_data[target] = syn_data[target].round().astype(int)
     
+    # Apply bounds correction to ensure synthetic data respects original data's bounds
+    print("\nChecking and enforcing original data bounds...")
+    syn_data = enforce_original_bounds(df, syn_data, num_list)
+    
     print(f"Synthetic data shape: {syn_data.shape}")
     print(f"Synthetic class distribution: {syn_data[target].value_counts().to_dict()}")
     
@@ -110,4 +137,4 @@ def main():
     print("\nSynthetic data saved to 'synthetic_data_tabddpm.csv'")
 
 if __name__ == "__main__":
-    main() 
+    main()

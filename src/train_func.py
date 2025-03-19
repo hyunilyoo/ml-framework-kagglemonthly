@@ -64,7 +64,7 @@ def clf_train(
     clf.fit(train_df, ytrain)
     
     # Generate predictions and evaluate performance
-    preds = clf.predict_proba(valid_df)[:, 1]
+    preds = dispatcher.get_probability_predictions(clf, valid_df)
     auc_score = metrics.roc_auc_score(yvalid, preds)
     print(auc_score)
     
