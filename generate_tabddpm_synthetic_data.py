@@ -43,6 +43,51 @@ def enforce_original_bounds(orig_df, syn_df, columns):
             
     return syn_df
 
+def enforce_original_class_distribution(orig_df, syn_df, target_column):
+    """Enforce the original class distribution in the synthetic data"""
+    # Get original class distribution
+    orig_class_dist = orig_df[target_column].value_counts(normalize=True)
+    
+    # Current synthetic class distribution
+    syn_class_dist = syn_df[target_column].value_counts(normalize=True)
+    
+    print(f"Original class distribution: {orig_class_dist.to_dict()}")
+    print(f"Current synthetic class distribution: {syn_class_dist.to_dict()}")
+    
+    # For each class in the original data
+    for class_val, orig_proportion in orig_class_dist.items():
+        # Calculate how many samples we should have with this class
+        target_count = int(orig_proportion * len(syn_df))
+        
+        # Current count of this class
+        current_count = (syn_df[target_column] == class_val).sum()
+        
+        # If we need more of this class
+        if current_count < target_count:
+            # How many more we need
+            needed = target_count - current_count
+            print(f"Need {needed} more samples with {target_column}={class_val}")
+            
+            # Find samples from the other class to convert
+            other_class_indices = syn_df[syn_df[target_column] != class_val].index
+            
+            # If we have enough of the other class to convert
+            if len(other_class_indices) >= needed:
+                # Pick random indices from the other class
+                indices_to_change = np.random.choice(other_class_indices, size=needed, replace=False)
+                
+                # Change the class value
+                syn_df.loc[indices_to_change, target_column] = class_val
+                print(f"Changed {needed} samples to {target_column}={class_val}")
+            else:
+                print(f"Warning: Not enough samples to convert to {target_column}={class_val}")
+    
+    # Check the final distribution
+    final_syn_class_dist = syn_df[target_column].value_counts(normalize=True)
+    print(f"Final synthetic class distribution: {final_syn_class_dist.to_dict()}")
+    
+    return syn_df
+
 def main():
     # Load your data
     df = pd.read_csv('input/month3/train.csv')
@@ -74,7 +119,7 @@ def main():
         epochs=2000,                    # More epochs but smaller steps
         batch_size=64,  # Smaller batch size
         hidden_dims=[512, 512, 512],   # Deeper model as per TabDDPM paper
-        guidance_scale=1.0,            # Lower from 3.0 to reduce extreme values
+        guidance_scale=3.0,            # Increased from 1.0 to improve class distribution preservation
         device='cuda'
         # device='cuda' if torch.cuda.is_available() else 'cpu'
     )
@@ -118,6 +163,10 @@ def main():
     print("\nChecking and enforcing original data bounds...")
     syn_data = enforce_original_bounds(df, syn_data, num_list)
     
+    # Fix the class distribution to match the original data
+    print("\nEnforcing original class distribution for the target variable...")
+    syn_data = enforce_original_class_distribution(df, syn_data, target)
+    
     print(f"Synthetic data shape: {syn_data.shape}")
     print(f"Synthetic class distribution: {syn_data[target].value_counts().to_dict()}")
     
@@ -137,4 +186,4 @@ def main():
     print("\nSynthetic data saved to 'synthetic_data_tabddpm.csv'")
 
 if __name__ == "__main__":
-    main()
+    main() 
