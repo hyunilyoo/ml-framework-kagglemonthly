@@ -1,18 +1,24 @@
 from sklearn import ensemble, svm, linear_model, naive_bayes
 import xgboost as xgb
-from sklearn.metrics import roc_auc_score
+import numpy as np
 
 MODELS = {
+    # Classification models
     "randomforest_clf": ensemble.RandomForestClassifier(n_estimators=150, n_jobs=-1, random_state=7, verbose=2),
     "extratrees_clf": ensemble.ExtraTreesClassifier(n_estimators=200, n_jobs=-1, random_state=7, verbose=2),
     'gradientboost_clf': ensemble.GradientBoostingClassifier(n_estimators=200, random_state=7, verbose=2),
     'xgboost_clf': xgb.XGBClassifier(device='cuda', n_estimators=1000, random_state=7),
     'svm': svm.LinearSVC(random_state=7),
     'logistic_clf': linear_model.LogisticRegression(max_iter=1000, solver='liblinear', random_state=7),
-    'nb_clf': naive_bayes.GaussianNB()
+    'nb_clf': naive_bayes.GaussianNB(),
+    # Regression models
+    'randomforest_reg': ensemble.RandomForestRegressor(n_estimators=150, n_jobs=-1, random_state=7, verbose=2),
+    'extratrees_reg': ensemble.ExtraTreesRegressor(n_estimators=200, n_jobs=-1, random_state=7, verbose=2),
+    'gradientboost_reg': ensemble.GradientBoostingRegressor(n_estimators=200, random_state=7, verbose=2),
+    'xgboost_reg': xgb.XGBRegressor(device='cuda', n_estimators=1000, random_state=7)
 }
 
-def get_probability_predictions(model, X):
+def get_proba_pred(model, X):
     """
     Get probability predictions from any model, handling those without predict_proba.
     
@@ -29,7 +35,6 @@ def get_probability_predictions(model, X):
             decisions = model.decision_function(X)
             # Scale to approximate probabilities (not calibrated probabilities)
             # Applying a sigmoid-like transformation
-            import numpy as np
             return 1.0 / (1.0 + np.exp(-decisions))
         except (AttributeError, NotImplementedError):
             # For models that don't have decision_function either

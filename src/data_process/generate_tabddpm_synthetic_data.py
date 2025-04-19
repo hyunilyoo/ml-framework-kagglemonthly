@@ -1,7 +1,6 @@
 """
 Script to generate synthetic data using the TabDDPM model with proper column handling
 """
-
 import numpy as np
 import pandas as pd
 import torch
@@ -90,16 +89,13 @@ def enforce_original_class_distribution(orig_df, syn_df, target_column):
 
 def main():
     # Load your data
-    df = pd.read_csv('input/month3/train.csv')
-    df = df.drop(['id', 'day'], axis=1)
+    df = pd.read_csv('input/month4_25/train_fillna.csv')
+    # df = df.drop(['id', 'Podcast_Name', 'Episode_Title'], axis=1)
     
     # Before calling generate_synthetic_data_tabddpm
-    df = df.dropna()  # Remove rows with NaN values
-    # Or impute missing values
-    df = df.fillna(df.mean())
     
     # Define your target variable
-    target = 'rainfall'
+    target = 'Listening_Time_minutes'
     
     # Define your numerical columns (all columns except target)
     num_list = [col for col in df.columns if col != target]
@@ -116,7 +112,7 @@ def main():
         categorical_columns=[target],  # Pass target as a list with one element
         numerical_columns=num_list,    # All other columns as numerical
         num_samples=1000,
-        epochs=2000,                    # More epochs but smaller steps
+        epochs=1000,                    # More epochs but smaller steps
         batch_size=64,  # Smaller batch size
         hidden_dims=[512, 512, 512],   # Deeper model as per TabDDPM paper
         guidance_scale=3.0,            # Increased from 1.0 to improve class distribution preservation

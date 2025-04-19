@@ -1,6 +1,7 @@
 from sklearn import metrics as skmetrics
+import numpy as np
 
-class ClassificationMetrics:
+class EvalMetrics:
     def __init__(self):
         self.metrics = {
             "accuracy": self._accuracy,
@@ -8,7 +9,8 @@ class ClassificationMetrics:
             "precision": self._precision,
             "recall": self._recall,
             "auc": self._auc,
-            "logloss": self._logloss
+            "logloss": self._logloss,
+            "rmse": self._rmse
         }
     
     def __call__(self, metric, y_true, y_pred, y_proba=None):
@@ -50,3 +52,7 @@ class ClassificationMetrics:
     @staticmethod
     def _logloss(y_true, y_pred):
         return skmetrics.log_loss(y_true=y_true, y_pred=y_pred)
+    
+    @staticmethod
+    def _rmse(y_true, y_pred):
+        return np.sqrt(skmetrics.mean_squared_error(y_true=y_true, y_pred=y_pred))

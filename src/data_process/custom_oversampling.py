@@ -15,9 +15,8 @@ import numpy as np
 import pandas as pd
 import torch
 from typing import Optional, Union, List, Dict, Tuple
-
 # Import our custom diffusion model implementation
-from tabular_diffusion import TabularDiffusionModel, generate_synthetic_data_simple_diffusion, balance_data_with_diffusion
+from data_process.tabular_diffusion import TabularDiffusionModel, generate_synthetic_data_simple_diffusion, balance_data_with_diffusion
 
 def generate_synthetic_data_tabddpm(
     train_data: pd.DataFrame,
