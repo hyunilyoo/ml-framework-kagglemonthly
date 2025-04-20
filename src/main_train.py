@@ -12,7 +12,6 @@ MODEL_FOLDER = os.environ.get("MODEL_FOLDER")
 TARGET = os.environ.get("TARGET")
 VERSION= os.environ.get("VERSION")
 EVAL_METRIC = os.environ.get("EVAL_METRIC")
-TEST_DATA = os.environ.get("TEST_DATA")
 
 if __name__ == "__main__":
     t.train(TRAINING_DATA, TARGET, MODEL, MODEL_FOLDER, FOLD, TOTAL_FOLDS, VERSION, EVAL_METRIC)

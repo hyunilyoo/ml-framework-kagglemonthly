@@ -5,14 +5,8 @@ import joblib
 import numpy as np
 from . import dispatcher
 
-TEST_DATA = os.environ.get('TEST_DATA')
-SUBMIT = os.environ.get('SUBMIT')
-NUM_FOLD = int(os.environ.get('NUM_FOLD'))
-MODEL = os.environ.get('MODEL')
-MODEL_PATH = os.environ.get('MODEL_PATH')
-VERSION = os.environ.get('VERSION')
 
-def clf_predict(test_data_path: str, model_type: str, model_name: str, model_path: str, total_folds: int) -> pd.DataFrame:
+def m_predict(test_data_path: str, model_type: str, model_name: str, model_path: str, total_folds: int) -> pd.DataFrame:
     """
     Generate predictions by ensembling multiple fold models.
     
@@ -38,10 +32,10 @@ def clf_predict(test_data_path: str, model_type: str, model_name: str, model_pat
         # Load model for current fold
         model_filename = f"{model_type}_{fold}_{model_name}.pkl"
         model_file_path = os.path.join(model_path, model_filename)
-        clf = joblib.load(model_file_path)
+        preds = joblib.load(model_file_path)
         
         # Get predictions for current fold
-        fold_preds = dispatcher.get_probability_predictions(clf, df)
+        fold_preds = dispatcher.get_proba_pred(preds, df)
         
         # Add to ensemble
         if predictions is None:
@@ -62,8 +56,15 @@ def clf_predict(test_data_path: str, model_type: str, model_name: str, model_pat
 
 
 if __name__ == "__main__":
+    TEST_DATA = os.environ.get('TEST_DATA')
+    SUBMIT = os.environ.get('SUBMIT')
+    NUM_FOLD = int(os.environ.get('NUM_FOLD'))
+    MODEL = os.environ.get('MODEL')
+    MODEL_PATH = os.environ.get('MODEL_PATH')
+    VERSION = os.environ.get('VERSION')
+
     # Generate predictions and save submission file
-    submission = clf_predict(
+    submission = m_predict(
         test_data_path=TEST_DATA,
         model_type=MODEL,
         model_name=VERSION,

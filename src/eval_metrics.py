@@ -55,4 +55,4 @@ class EvalMetrics:
     
     @staticmethod
     def _rmse(y_true, y_pred):
-        return np.sqrt(skmetrics.mean_squared_error(y_true=y_true, y_pred=y_pred))
+        return skmetrics.root_mean_squared_error(y_true=y_true, y_pred=y_pred)
