@@ -56,3 +56,6 @@ class EvalMetrics:
     @staticmethod
     def _rmse(y_true, y_pred):
         return skmetrics.root_mean_squared_error(y_true=y_true, y_pred=y_pred)
+    @staticmethod
+    def _rmsle(y_true, y_pred):
+        return skmetrics.mean_squared_log_error(y_true=y_true, y_pred=y_pred)
