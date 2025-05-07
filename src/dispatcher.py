@@ -16,7 +16,7 @@ MODELS = {
     'randomforest_reg': ensemble.RandomForestRegressor(n_estimators=150, n_jobs=-1, random_state=7, verbose=2),
     'extratrees_reg': ensemble.ExtraTreesRegressor(n_estimators=200, n_jobs=-1, random_state=7, verbose=2),
     'gradientboost_reg': ensemble.GradientBoostingRegressor(n_estimators=200, random_state=7, verbose=2),
-    'xgboost_reg': xgb.XGBRegressor(n_estimators=1000, eta=0.001, random_state=7)
+    'xgboost_reg': xgb.XGBRegressor(n_estimators=1000, eta=0.01, random_state=7)
 }
 
 def get_proba_pred(model, X):

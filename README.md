@@ -1,4 +1,4 @@
-# ML Framework for Kaggle Monthly
+# ML Framework for Kaggle Monthly (OUTDATED)
 
 A machine learning framework designed for Kaggle competitions with a focus on tabular data processing and generation using diffusion models.
 

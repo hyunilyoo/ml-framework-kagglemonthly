@@ -10,7 +10,8 @@ class EvalMetrics:
             "recall": self._recall,
             "auc": self._auc,
             "logloss": self._logloss,
-            "rmse": self._rmse
+            "rmse": self._rmse,
+            "rmsle": self._rmsle
         }
     
     def __call__(self, metric, y_true, y_pred, y_proba=None):

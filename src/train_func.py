@@ -1,5 +1,4 @@
 import os
-import cupy as cp
 import polars as pl
 from sklearn import ensemble
 from sklearn import preprocessing
@@ -11,35 +10,20 @@ from .eval_metrics import EvalMetrics
 from .utils import create_fold_mapping
 
 def train(
-    data_path: str, 
-    target: str, 
-    model: str, 
-    model_folder_path: str, 
-    fold: int, 
-    total_folds: int,
-    version: str,
-    eval_metric: str
-) -> None:
-    """
-    Train a clf/reg model using cross-validation
-    
-    Args:
-        data_path: Path to the CSV file containing the dataset
-        target: Name of the target column
-        model: Model name (must be a key in dispatcher.MODELS)
-        model_folder_path: Directory path where models will be saved
-        fold: Current fold index for validation
-        total_folds: Total number of folds for cross-validation
-        version: Additional identifier for the saved model
-        
-    Returns:
-        None: Prints eval metric score and saves model to model folder
-    """
+        data_df, 
+        target, 
+        model, 
+        model_folder_path, 
+        fold, 
+        total_folds, 
+        version, 
+        eval_metric
+        ):
     # Create fold mapping for cross-validation
     fold_mapping = create_fold_mapping(total_folds)
     
     # Load the dataset
-    df = pl.read_csv(data_path)
+    df = data_df
     
     # Split data into training and validation sets
     train_df = df.filter(pl.col('kfold').is_in(fold_mapping[fold]))
