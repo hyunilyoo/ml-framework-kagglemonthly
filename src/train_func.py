@@ -48,7 +48,6 @@ def train(
     preds = dispatcher.get_proba_pred(t_model, valid_df)
     eval_cls = EvalMetrics()
     eval = eval_cls(eval_metric, yvalid, preds)
-    print(eval)
     
     # Save model and column information
     model_path = f"{model_folder_path}{model}_{fold}_{version}.pkl"

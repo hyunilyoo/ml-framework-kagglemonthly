@@ -5,32 +5,19 @@ import joblib
 import numpy as np
 from . import dispatcher
 
-
-def m_predict(test_data_path: str, model_type: str, model_name: str, model_path: str, total_folds: int) -> pd.DataFrame:
-    """
-    Generate predictions by ensembling multiple fold models.
-    
-    Args:
-        test_data_path: Path to the test CSV file
-        model_type: Type of model (e.g., 'lgbm', 'xgb')
-        model_name: Name/version of the model
-        model_path: Directory containing saved model files
-    
-    Returns:
-        DataFrame with id and target prediction columns
-    """
+def predict(test_data, model, model_name, model_path, total_folds: int):
     # Load test data
-    df = pl.read_csv(test_data_path)
-    test_idx = np.array(df['id'])
-    df = df.drop('id')
+    df = test_data 
+    test_idx = df['id']
+    df = df.drop(['id', 'Sex'], axis=1)
     
     # Initialize predictions array
     predictions = None
     
     # Generate and ensemble predictions from each fold
-    for fold in range(NUM_FOLD):
+    for fold in range(total_folds):
         # Load model for current fold
-        model_filename = f"{model_type}_{fold}_{model_name}.pkl"
+        model_filename = f"{model}_{fold}_{model_name}.pkl"
         model_file_path = os.path.join(model_path, model_filename)
         preds = joblib.load(model_file_path)
         
@@ -44,7 +31,7 @@ def m_predict(test_data_path: str, model_type: str, model_name: str, model_path:
             predictions += fold_preds
     
     # Average predictions across all folds
-    predictions /= NUM_FOLD
+    predictions /= total_folds
     
     # Create submission dataframe
     submission = pd.DataFrame({
@@ -53,23 +40,3 @@ def m_predict(test_data_path: str, model_type: str, model_name: str, model_path:
     })
     
     return submission
-
-
-if __name__ == "__main__":
-    TEST_DATA = os.environ.get('TEST_DATA')
-    SUBMIT = os.environ.get('SUBMIT')
-    NUM_FOLD = int(os.environ.get('NUM_FOLD'))
-    MODEL = os.environ.get('MODEL')
-    MODEL_PATH = os.environ.get('MODEL_PATH')
-    VERSION = os.environ.get('VERSION')
-
-    # Generate predictions and save submission file
-    submission = m_predict(
-        test_data_path=TEST_DATA,
-        model_type=MODEL,
-        model_name=VERSION,
-        model_path=MODEL_PATH,
-        total_folds=NUM_FOLD
-    )
-    
-    submission.to_csv(SUBMIT, index=False)
